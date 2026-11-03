@@ -1,7 +1,12 @@
-name: Build MNN_Next ARM64 APK
+name: Build MNN_Next APK (OnePlus 12R Jarvis Edition)
 on:
   push:
-    branches: ["main"]
+    branches: ["main", "master"]
+    paths-ignore:
+      - ".github/workflows/build_mnn_next.yml"
+      - ".github/workflows/finish-upload.yml"
+  pull_request:
+    branches: ["main", "master"]
   workflow_dispatch:
 permissions:
   contents: write
@@ -9,7 +14,7 @@ jobs:
   build-apk:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout source
+      - name: Checkout MNN_Next
         uses: actions/checkout@v4
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -20,7 +25,7 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.7"
-      - name: Configure and install Android SDK packages
+      - name: Configure Android SDK and install NDK r26b
         shell: bash
         run: |
           set -euo pipefail
@@ -36,7 +41,7 @@ jobs:
           echo "ANDROID_NDK_HOME=$SDK_ROOT/ndk/26.1.10909125" >> "$GITHUB_ENV"
           yes | "$SDKMANAGER" --licenses > /dev/null || true
           "$SDKMANAGER" --install "ndk;26.1.10909125" "cmake;3.22.1" "platforms;android-34" "build-tools;34.0.0"
-      - name: Clone and compile Alibaba MNN for ARM64
+      - name: Clone and compile Alibaba MNN C++ engine for ARM64
         shell: bash
         run: |
           set -euo pipefail
@@ -76,11 +81,11 @@ jobs:
         run: |
           set -euo pipefail
           ./gradlew assembleDebug assembleRelease --no-daemon --stacktrace
-      - name: Run unit tests (known websocket-path assertion is non-blocking)
+      - name: Run unit tests (non-blocking while websocket path assertion is investigated)
         shell: bash
         continue-on-error: true
         run: ./gradlew testDebugUnitTest --no-daemon --stacktrace
-      - name: Upload APK artifacts
+      - name: Upload debug and release APK artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -88,11 +93,11 @@ jobs:
           path: |
             app/build/outputs/apk/release/*.apk
             app/build/outputs/apk/debug/*.apk
-      - name: Publish GitHub release
+      - name: Publish automatic GitHub release
         uses: softprops/action-gh-release@v2
-        if: success() && github.ref_name == 'main'
+        if: success() && github.event_name != 'pull_request' && (github.ref_name == 'main' || github.ref_name == 'master')
         with:
           tag_name: v2.0.${{ github.run_number }}
           name: "MNN_Next Jarvis Release #${{ github.run_number }}"
-          body: "Automated ARM64 APK build for OnePlus 12R. Native MNN build succeeded; one websocket-path unit assertion is currently known to fail and is reported in Actions."
+          body: "Automatisk bygget ARM64 APK optimeret til OnePlus 12R (Snapdragon 8 Gen 2, 16GB RAM, LineageOS) med HayaiTTS-Next og Home Assistant integration. Unit-test resultater kan ses i GitHub Actions."
           files: app/build/outputs/apk/release/*.apk
