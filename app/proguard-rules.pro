@@ -1,0 +1,2 @@
+-keep class com.tokebohl.mnnnext.** { *; }
+-dontwarn okhttp3.**
