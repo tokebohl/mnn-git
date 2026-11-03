@@ -1,29 +1,16 @@
-name: Restore original archive and build APK
+name: Build MNN_Next ARM64 APK
 on:
   push:
     branches: ["main"]
+  workflow_dispatch:
 permissions:
   contents: write
 jobs:
-  restore-and-build:
+  build-apk:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
+      - name: Checkout source
         uses: actions/checkout@v4
-      - name: Restore exact uploaded project files
-        shell: bash
-        run: |
-          set -euo pipefail
-          cat .upload/part*.txt | base64 --decode > /tmp/MNN_Next-github-ready-v3.zip
-          unzip -t /tmp/MNN_Next-github-ready-v3.zip
-          unzip -oq /tmp/MNN_Next-github-ready-v3.zip -d .
-          rm -rf .upload
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git reset HEAD -- .github/workflows
-          git commit -m "Upload original MNN_Next project files"
-          git push origin HEAD:main
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
@@ -33,22 +20,22 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.7"
-      - name: Configure preinstalled Android SDK
+      - name: Configure and install Android SDK packages
         shell: bash
         run: |
           set -euo pipefail
           SDK_ROOT="/usr/local/lib/android/sdk"
+          SDKMANAGER="$SDK_ROOT/cmdline-tools/16.0/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -type f -name sdkmanager | sort -V | tail -n 1)"
+          fi
+          test -n "$SDKMANAGER"
+          test -x "$SDKMANAGER"
           echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
           echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
-          echo "$SDK_ROOT/platform-tools" >> "$GITHUB_PATH"
-          echo "$SDK_ROOT/cmdline-tools/16.0/bin" >> "$GITHUB_PATH"
-      - name: Install NDK r26b, CMake, and Android 34
-        shell: bash
-        run: |
-          set -euo pipefail
-          yes | sdkmanager --licenses > /dev/null || true
-          sdkmanager --install "ndk;26.1.10909125" "cmake;3.22.1" "platforms;android-34" "build-tools;34.0.0"
-          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/26.1.10909125" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$SDK_ROOT/ndk/26.1.10909125" >> "$GITHUB_ENV"
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
+          "$SDKMANAGER" --install "ndk;26.1.10909125" "cmake;3.22.1" "platforms;android-34" "build-tools;34.0.0"
       - name: Clone and compile Alibaba MNN for ARM64
         shell: bash
         run: |
@@ -69,7 +56,7 @@ jobs:
             -DMNN_SUPPORT_TRANSFORMER_FUSE=ON \
             -DMNN_BUILD_LLM=ON \
             -DMNN_USE_MMAP=ON
-          make -j2
+          make -j"$(nproc)"
           mkdir -p "$GITHUB_WORKSPACE/app/src/main/jniLibs/arm64-v8a"
           cp libMNN.so "$GITHUB_WORKSPACE/app/src/main/jniLibs/arm64-v8a/"
           cp libllm.so "$GITHUB_WORKSPACE/app/src/main/jniLibs/arm64-v8a/"
@@ -79,7 +66,7 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/app/src/main/cpp/mnn_dist"
           cp -r /tmp/MNN/include "$GITHUB_WORKSPACE/app/src/main/cpp/mnn_dist/"
           cp -r /tmp/MNN/transformers "$GITHUB_WORKSPACE/app/src/main/cpp/mnn_dist/"
-      - name: Run tests and assemble debug and release APKs
+      - name: Run tests and build debug/release APKs
         shell: bash
         run: |
           set -euo pipefail
@@ -99,5 +86,5 @@ jobs:
         with:
           tag_name: v2.0.${{ github.run_number }}
           name: "MNN_Next Jarvis Release #${{ github.run_number }}"
-          body: "Automated ARM64 APK build from the uploaded MNN_Next source archive."
+          body: "Automated ARM64 APK build for OnePlus 12R."
           files: app/build/outputs/apk/release/*.apk
