@@ -1,0 +1,95 @@
+name: Restore original archive and build APK
+on:
+  push:
+    branches: ["main"]
+permissions:
+  contents: write
+jobs:
+  restore-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Restore exact uploaded project files
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .upload/part*.txt | base64 --decode > /tmp/MNN_Next-github-ready-v3.zip
+          unzip -t /tmp/MNN_Next-github-ready-v3.zip
+          unzip -oq /tmp/MNN_Next-github-ready-v3.zip -d .
+          rm -rf .upload
+          rm -f .github/workflows/finish-upload.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Upload original MNN_Next project files"
+          git push origin HEAD:main
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: "temurin"
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+      - name: Install NDK r26b, CMake, and Android 34
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager --install "ndk;26.1.10909125" "cmake;3.22.1" "platforms;android-34" "build-tools;34.0.0"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/26.1.10909125" >> "$GITHUB_ENV"
+      - name: Clone and compile Alibaba MNN for ARM64
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/alibaba/MNN.git /tmp/MNN
+          mkdir -p /tmp/MNN/build_android
+          cd /tmp/MNN/build_android
+          cmake .. \
+            -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-29 \
+            -DANDROID_STL=c++_shared \
+            -DMNN_BUILD_FOR_ANDROID_COMMAND=ON \
+            -DMNN_OPENCL=ON \
+            -DMNN_VULKAN=ON \
+            -DMNN_ARM82=ON \
+            -DMNN_LOW_MEMORY=ON \
+            -DMNN_SUPPORT_TRANSFORMER_FUSE=ON \
+            -DMNN_BUILD_LLM=ON \
+            -DMNN_USE_MMAP=ON
+          make -j2
+          mkdir -p "$GITHUB_WORKSPACE/app/src/main/jniLibs/arm64-v8a"
+          cp libMNN.so "$GITHUB_WORKSPACE/app/src/main/jniLibs/arm64-v8a/"
+          cp libllm.so "$GITHUB_WORKSPACE/app/src/main/jniLibs/arm64-v8a/"
+          find . -name "libMNN_Express.so" -exec cp {} "$GITHUB_WORKSPACE/app/src/main/jniLibs/arm64-v8a/" \;
+          find . -name "libMNN_CL.so" -exec cp {} "$GITHUB_WORKSPACE/app/src/main/jniLibs/arm64-v8a/" \;
+          find . -name "libMNN_Vulkan.so" -exec cp {} "$GITHUB_WORKSPACE/app/src/main/jniLibs/arm64-v8a/" \;
+          mkdir -p "$GITHUB_WORKSPACE/app/src/main/cpp/mnn_dist"
+          cp -r /tmp/MNN/include "$GITHUB_WORKSPACE/app/src/main/cpp/mnn_dist/"
+          cp -r /tmp/MNN/transformers "$GITHUB_WORKSPACE/app/src/main/cpp/mnn_dist/"
+      - name: Run tests and assemble debug and release APKs
+        shell: bash
+        run: |
+          set -euo pipefail
+          gradle wrapper --gradle-version 8.7
+          chmod +x ./gradlew
+          ./gradlew testDebugUnitTest assembleDebug assembleRelease --no-daemon --stacktrace
+      - name: Upload APK artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: MNN_Next-OnePlus12R-ARM64-APKs
+          path: |
+            app/build/outputs/apk/release/*.apk
+            app/build/outputs/apk/debug/*.apk
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        if: github.ref_name == 'main'
+        with:
+          tag_name: v2.0.${{ github.run_number }}
+          name: "MNN_Next Jarvis Release #${{ github.run_number }}"
+          body: "Automated ARM64 APK build from the uploaded MNN_Next source archive."
+          files: app/build/outputs/apk/release/*.apk
