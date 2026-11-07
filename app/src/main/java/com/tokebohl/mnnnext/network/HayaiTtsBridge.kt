@@ -280,6 +280,7 @@ class HayaiTtsBridge(
                             Log.d(TAG, "Lokal afspilning på OnePlus 10T afsluttet.")
                         }
                         "error" -> Log.e(TAG, "HayaiTTS fejl: ${json.optString("detail", "Ukendt serverfejl")}")
+                        else -> Unit
                     }
                 }
             }
