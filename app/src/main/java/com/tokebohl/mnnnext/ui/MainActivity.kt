@@ -516,7 +516,7 @@ fun JarvisMainApp(service: JarvisBrainService?) {
                             )
                             Spacer(modifier = Modifier.height(6.dp))
                             Text(
-                                text = "Autentificeret WebSocket (/v1/tts/stream) med start/text/end protokol, PCM16LE AudioTrack-afspilning og mDNS/UDP discovery:",
+                                text = "WebSocket (/v1/tts/stream): Jarvis sender tekst, og OnePlus 10T genererer og afspiller lyden på sin egen højttaler. Jarvis Brain afspiller ikke PCM lokalt. mDNS/UDP discovery:",
                                 color = Color.Gray,
                                 fontSize = 12.sp
                             )
