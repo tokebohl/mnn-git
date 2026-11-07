@@ -104,8 +104,8 @@ class HayaiTtsBridge(
     private val _connectionState = MutableStateFlow<NodeConnectionState>(NodeConnectionState.Searching)
     val connectionState: StateFlow<NodeConnectionState> = _connectionState
 
-    private val _receivedPcmFrames = MutableStateFlow(0)
-    val receivedPcmFrames: StateFlow<Int> = _receivedPcmFrames
+    private val _localPlaybackCount = MutableStateFlow(0)
+    val localPlaybackCount: StateFlow<Int> = _localPlaybackCount
 
     private val sentenceQueue = Channel<Pair<String, Int>>(Channel.UNLIMITED)
     private val tokenBuffer = StringBuilder()
@@ -275,7 +275,10 @@ class HayaiTtsBridge(
                     if (rate in 8000..96000) currentSampleRate = rate
                     when (json.optString("type", json.optString("event"))) {
                         "audio_start" -> Log.d(TAG, "HayaiTTS afspiller lokalt på OnePlus 10T (${currentSampleRate} Hz).")
-                        "audio_end" -> Log.d(TAG, "Lokal afspilning på OnePlus 10T afsluttet.")
+                        "audio_end" -> {
+                            _localPlaybackCount.value += 1
+                            Log.d(TAG, "Lokal afspilning på OnePlus 10T afsluttet.")
+                        }
                         "error" -> Log.e(TAG, "HayaiTTS fejl: ${json.optString("detail", "Ukendt serverfejl")}")
                     }
                 }
