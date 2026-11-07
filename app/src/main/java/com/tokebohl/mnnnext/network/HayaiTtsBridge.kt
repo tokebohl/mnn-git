@@ -1,9 +1,6 @@
 package com.tokebohl.mnnnext.network
 
 import android.content.Context
-import android.media.AudioAttributes
-import android.media.AudioFormat
-import android.media.AudioTrack
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.net.wifi.WifiManager
@@ -14,8 +11,6 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import okhttp3.*
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.RequestBody.Companion.toRequestBody
 import okio.ByteString
 import org.json.JSONObject
 import java.net.*
@@ -46,7 +41,6 @@ class HayaiTtsBridge(
         private const val UDP_MAGIC_PING = "JARVIS_DISCOVER_HAYAI_TTS"
         private const val UDP_MAGIC_PONG_PREFIX = "HAYAI_TTS_HERE:"
         private val CANDIDATE_PORTS = listOf(8000, 8080, 5000, 5002, 7860, 8888)
-        private val CANDIDATE_TTS_PATHS = listOf("/v1/audio/speech", "/api/tts", "/tts", "/synthesize")
         private val SENTENCE_DELIMITERS = charArrayOf('.', '!', '?', '\n', ';', ':')
 
         fun buildStartFrame(voice: String = "default", speed: Float = 1.0f, sampleRate: Int = 24000): String {
@@ -56,6 +50,9 @@ class HayaiTtsBridge(
                 put("speed", speed.toDouble())
                 put("format", "pcm16le")
                 put("sample_rate", sampleRate)
+                // HayaiTTS must play on the 10T itself. Jarvis sends text only
+                // and intentionally does not play returned PCM on the 12R.
+                put("playback_target", "server")
             }.toString()
         }
 
@@ -93,11 +90,9 @@ class HayaiTtsBridge(
 
     private var activeWebSocket: WebSocket? = null
     private var targetEndpoint: Pair<String, Int>? = null
-    private var activeRestPath: String = "/v1/audio/speech"
     private val isDiscovering = AtomicBoolean(false)
     private val streamSessionStarted = AtomicBoolean(false)
 
-    private var streamingAudioTrack: AudioTrack? = null
     private var currentSampleRate: Int = 24000
 
     @Volatile
@@ -149,8 +144,10 @@ class HayaiTtsBridge(
         currentSequenceId = 0
         val ws = activeWebSocket
         if (ws != null && streamSessionStarted.compareAndSet(false, true)) {
-            ensureStreamingAudioTrack(currentSampleRate)
-            ws.send(buildStartFrame(voice, speed, currentSampleRate))
+            if (!ws.send(buildStartFrame(voice, speed, currentSampleRate))) {
+                streamSessionStarted.set(false)
+                triggerReconnect()
+            }
         }
     }
 
@@ -190,10 +187,6 @@ class HayaiTtsBridge(
         currentSequenceId = 0
         streamSessionStarted.set(false)
         activeWebSocket?.send(buildCancelFrame())
-        runCatching {
-            streamingAudioTrack?.pause()
-            streamingAudioTrack?.flush()
-        }
     }
 
     private fun findFlushIndex(buf: StringBuilder): Int {
@@ -225,51 +218,24 @@ class HayaiTtsBridge(
 
     private suspend fun dispatchSentenceTo10T(sentence: String, sequenceId: Int) {
         val ws = activeWebSocket
-        if (ws != null) {
-            if (streamSessionStarted.compareAndSet(false, true)) {
-                ensureStreamingAudioTrack(currentSampleRate)
-                ws.send(buildStartFrame(selectedVoice, 1.0f, currentSampleRate))
-            }
-            if (ws.send(buildTextFrame(sentence, sequenceId))) {
+        if (ws == null) {
+            Log.w(TAG, "Ingen aktiv WebSocket til OnePlus 10T; genopretter forbindelse i stedet for lokal afspilning på Jarvis Brain.")
+            triggerReconnect()
+            return
+        }
+        if (!streamSessionStarted.get()) {
+            if (!streamSessionStarted.compareAndSet(false, true)) return
+            if (!ws.send(buildStartFrame(selectedVoice, 1.0f, currentSampleRate))) {
+                streamSessionStarted.set(false)
+                triggerReconnect()
                 return
             }
         }
-
-        val (host, port) = targetEndpoint ?: return
-        val restPayload = JSONObject().apply {
-            put("text", sentence)
-            put("input", sentence)
-            put("voice", selectedVoice)
-            put("response_format", "pcm")
-            put("stream", true)
-        }.toString()
-
-        for (path in listOf(activeRestPath) + CANDIDATE_TTS_PATHS.filter { it != activeRestPath }) {
-            val delivered = runCatching {
-                val reqBuilder = Request.Builder()
-                    .url("http://$host:$port$path")
-                    .post(restPayload.toRequestBody("application/json; charset=utf-8".toMediaType()))
-                applyAuthHeaders(reqBuilder)
-
-                okHttpClient.newCall(reqBuilder.build()).execute().use { response ->
-                    if (response.isSuccessful) {
-                        activeRestPath = path
-                        val audioBytes = response.body?.bytes()
-                        if (audioBytes != null && audioBytes.isNotEmpty()) {
-                            writePcm16LeAudioFrame(audioBytes)
-                        }
-                        true
-                    } else {
-                        false
-                    }
-                }
-            }.getOrDefault(false)
-
-            if (delivered) return
+        if (!ws.send(buildTextFrame(sentence, sequenceId))) {
+            Log.w(TAG, "Kunne ikke sende tekst til OnePlus 10T; genopretter forbindelse.")
+            streamSessionStarted.set(false)
+            triggerReconnect()
         }
-
-        Log.w(TAG, "Kunne ikke levere tekst til OnePlus 10T, genopretter forbindelse...")
-        triggerReconnect()
     }
 
     private fun applyAuthHeaders(builder: Request.Builder) {
@@ -306,32 +272,28 @@ class HayaiTtsBridge(
                 runCatching {
                     val json = JSONObject(text)
                     val rate = json.optInt("sample_rate", 0)
-                    if (rate in 8000..48000 && rate != currentSampleRate) {
-                        currentSampleRate = rate
-                        ensureStreamingAudioTrack(rate)
+                    if (rate in 8000..96000) currentSampleRate = rate
+                    when (json.optString("type", json.optString("event"))) {
+                        "audio_start" -> Log.d(TAG, "HayaiTTS afspiller lokalt på OnePlus 10T (${currentSampleRate} Hz).")
+                        "audio_end" -> Log.d(TAG, "Lokal afspilning på OnePlus 10T afsluttet.")
+                        "error" -> Log.e(TAG, "HayaiTTS fejl: ${json.optString("detail", "Ukendt serverfejl")}")
                     }
                 }
             }
 
             override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
-                val rawPcm = bytes.toByteArray()
-                if (rawPcm.isNotEmpty()) {
-                    _receivedPcmFrames.value += 1
-                    writePcm16LeAudioFrame(rawPcm)
+                // Server-side output mode does not send PCM to this device. Ignore
+                // unexpected binary frames to prevent duplicate playback on Jarvis Brain.
+                if (bytes.size > 0) {
+                    Log.w(TAG, "Ignorerer uventet PCM-frame: TTS-output skal afspilles på OnePlus 10T.")
                 }
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 activeWebSocket = null
                 streamSessionStarted.set(false)
-                scope.launch(Dispatchers.IO) {
-                    if (probeHttpNode(host, port)) {
-                        isDiscovering.set(false)
-                        _connectionState.value = NodeConnectionState.Connected(host, port, "HTTP Stream")
-                    } else {
-                        triggerReconnect()
-                    }
-                }
+                Log.w(TAG, "HayaiTTS WebSocket fejlede; lokal OnePlus 10T-afspilning er ikke tilgængelig før forbindelsen er genoprettet.", t)
+                triggerReconnect()
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
@@ -472,88 +434,6 @@ class HayaiTtsBridge(
             ?.hostAddress
     }.getOrNull()
 
-    @Synchronized
-    private fun ensureStreamingAudioTrack(sampleRate: Int) {
-        if (context == null) return
-        val existing = streamingAudioTrack
-        if (existing != null && existing.sampleRate == sampleRate && existing.state == AudioTrack.STATE_INITIALIZED) {
-            if (existing.playState != AudioTrack.PLAYSTATE_PLAYING) {
-                runCatching { existing.play() }
-            }
-            return
-        }
-        runCatching {
-            existing?.stop()
-            existing?.release()
-        }
-        runCatching {
-            val minBuf = AudioTrack.getMinBufferSize(
-                sampleRate,
-                AudioFormat.CHANNEL_OUT_MONO,
-                AudioFormat.ENCODING_PCM_16BIT
-            ).coerceAtLeast(4096)
-
-            streamingAudioTrack = AudioTrack.Builder()
-                .setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .build()
-                )
-                .setAudioFormat(
-                    AudioFormat.Builder()
-                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                        .setSampleRate(sampleRate)
-                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                        .build()
-                )
-                .setBufferSizeInBytes(minBuf * 2)
-                .setTransferMode(AudioTrack.MODE_STREAM)
-                .build()
-                .also { it.play() }
-        }.onFailure {
-            Log.e(TAG, "Kunne ikke initialisere PCM16LE AudioTrack", it)
-        }
-    }
-
-    @Synchronized
-    private fun writePcm16LeAudioFrame(rawBytes: ByteArray) {
-        if (context == null || rawBytes.isEmpty()) return
-        runCatching {
-            val isRiffWav = rawBytes.size > 44 &&
-                rawBytes[0] == 'R'.code.toByte() &&
-                rawBytes[1] == 'I'.code.toByte() &&
-                rawBytes[2] == 'F'.code.toByte() &&
-                rawBytes[3] == 'F'.code.toByte()
-
-            val offset = if (isRiffWav) 44 else 0
-            val length = rawBytes.size - offset
-            if (length <= 0) return
-
-            if (isRiffWav) {
-                val wavRate = ((rawBytes[27].toInt() and 0xFF) shl 24) or
-                    ((rawBytes[26].toInt() and 0xFF) shl 16) or
-                    ((rawBytes[25].toInt() and 0xFF) shl 8) or
-                    (rawBytes[24].toInt() and 0xFF)
-                if (wavRate in 8000..48000 && wavRate != currentSampleRate) {
-                    currentSampleRate = wavRate
-                }
-            }
-
-            ensureStreamingAudioTrack(currentSampleRate)
-            val track = streamingAudioTrack ?: return
-            if (track.playState != AudioTrack.PLAYSTATE_PLAYING) {
-                track.play()
-            }
-            val alignedLength = length - (length % 2)
-            if (alignedLength > 0) {
-                track.write(rawBytes, offset, alignedLength, AudioTrack.WRITE_BLOCKING)
-            }
-        }.onFailure {
-            Log.e(TAG, "Fejl ved skrivning af PCM16LE frame", it)
-        }
-    }
-
     private fun acquireLowLatencyWifiLocks() {
         if (wifiManager == null) return
         if (multicastLock == null) {
@@ -578,11 +458,6 @@ class HayaiTtsBridge(
         streamSessionStarted.set(false)
         runCatching { nsdDiscoveryListener.let { nsdManager?.stopServiceDiscovery(it) } }
         activeWebSocket?.close(1000, "Service lukker")
-        runCatching {
-            streamingAudioTrack?.stop()
-            streamingAudioTrack?.release()
-        }
-        streamingAudioTrack = null
         multicastLock?.takeIf { it.isHeld }?.release()
         wifiLock?.takeIf { it.isHeld }?.release()
     }
