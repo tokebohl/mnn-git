@@ -12,10 +12,10 @@ Komplet, produktionsklar custom MNN-LLM Android-applikation bygget specifikt til
    - Atomisk afbrydelse (`nativeCancelGeneration`), KV-cache genbrug og nulstilling, samt UTF-8-sikret `std::streambuf` token-streaming.
    - Understøtter både lokal `MNN::Express::Module` embedding-model (`embedding.mnn`) og 384-D lokal semantisk vektor-indeksering.
 
-2. **Autentificeret HayaiTTS-Next `/v1/tts/stream` Integration (`HayaiTtsBridge.kt`)**
-   - Bruger det dokumenterede autentificerede WebSocket endpoint `/v1/tts/stream` med `Authorization: Bearer <API_KEY>` og `X-API-Key` headers (gemt i Android Keystore via `SecureCredentialStore.kt`).
+2. **HayaiTTS-Next med lokal højttalerafspilning på OnePlus 10T (`HayaiTtsBridge.kt`)**
+   - Forbinder til WebSocket endpointet `/v1/tts/stream` på OnePlus 10T. Ingen API-nøgle er nødvendig på det betroede lokale netværk.
    - Streamer sætninger og delsætninger i realtid med `{"type":"start"}`, `{"type":"text"}`, `{"type":"end"}` og `{"type":"cancel"}` protokollen uden at vente på hele LLM-svaret.
-   - Modtager og afspiller binære **PCM16LE** lyd-frames direkte via lav-latens `AudioTrack.MODE_STREAM`.
+   - Sender `playback_target: "server"`, så HayaiTTS genererer og afspiller PCM16LE direkte på OnePlus 10T's egen højttaler. Jarvis Brain modtager ikke PCM og afspiller derfor ikke lyden på 12R.
    - 3-lags Zero-Config Discovery: mDNS (`_hayaitts._tcp.`), UDP Broadcast (`42110`) og parallel `/24` subnet-scanner samt manuel IP-konfiguration.
 
 3. **Persistent Offline Hukommelse (`JarvisMemoryStore.kt`)**
@@ -34,4 +34,4 @@ Komplet, produktionsklar custom MNN-LLM Android-applikation bygget specifikt til
 
 1. Kopiér din MNN-modelmappe (`config.json`, `llm.mnn`, `llm.mnn.weight`, `tokenizer.txt`) til `/sdcard/MNNModels/<model-navn>/` på OnePlus 12R.
 2. Åbn fanen **10T & HW**, vælg modellen, vælg `Adreno 740 OpenCL` (eller `CPU`), og tryk **Indlæs Model**.
-3. Indtast din HayaiTTS API-nøgle (og evt. OnePlus 10T IP/Port) under **10T & HW**, og tryk **Gem & Forbind** eller **Test Tale**.
+3. Indtast eventuelt OnePlus 10T's IP-adresse og port under **10T & HW** (API-nøgle er ikke nødvendig), og tryk **Gem & Forbind** eller **Test Tale**.
