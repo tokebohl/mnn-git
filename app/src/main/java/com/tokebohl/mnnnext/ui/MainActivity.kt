@@ -124,7 +124,7 @@ fun JarvisMainApp(service: JarvisBrainService?) {
         ?: remember { mutableStateOf(false) }
     val diagnosticLogs by service?.diagnosticLogs?.collectAsState()
         ?: remember { mutableStateOf(emptyList()) }
-    val pcmFramesCount by service?.ttsBridge?.receivedPcmFrames?.collectAsState()
+    val localPlaybackCount by service?.ttsBridge?.localPlaybackCount?.collectAsState()
         ?: remember { mutableStateOf(0) }
 
     var modelPath by remember {
@@ -786,7 +786,7 @@ fun JarvisMainApp(service: JarvisBrainService?) {
                                 fontFamily = FontFamily.Monospace
                             )
                             Text(
-                                text = "Aktiv MNN Backend: ${service?.llmRunner?.activeBackendName ?: "unloaded"} | Modtagne PCM16LE frames: $pcmFramesCount",
+                                text = "Aktiv MNN Backend: ${service?.llmRunner?.activeBackendName ?: "unloaded"} | Afspilninger på OnePlus 10T: $localPlaybackCount",
                                 color = Color(0xFF00E676),
                                 fontSize = 12.sp,
                                 fontFamily = FontFamily.Monospace
